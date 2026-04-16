@@ -18,6 +18,7 @@ import {
   type ProviderModel,
   type ShapedUsage,
 } from "./langsmith-bridge.js";
+import { extractToolCalls, normalizeMessage } from "./message-shape.js";
 
 type InboundMessage = PluginHookBeforeMessageWriteEvent["message"];
 type AssistantLike = Extract<InboundMessage, { role: "assistant" }>;
@@ -70,22 +71,12 @@ interface ActiveTurn {
   tools: Map<string, RunTree>;
   /** runId → spawn snapshot for subagents spawned in this turn. */
   subagentStarts: Map<string, SubagentStart>;
-  totals: UsageTotals;
   innerLlmCalls: number;
   mostRecentLlm?: RunTree;
   /** Start timestamp to use for the next inner-LLM child run. */
   nextLlmStartMs: number;
   /** Latest assistant text block; surfaced as root `outputs.output` for trace previews. */
   lastAssistantText?: string;
-}
-
-interface UsageTotals {
-  input: number;
-  output: number;
-  total: number;
-  cost: number;
-  hadUsage: boolean;
-  hadCost: boolean;
 }
 
 export class TurnRecorder {
@@ -158,7 +149,6 @@ export class TurnRecorder {
       contextBuffer,
       tools: new Map(),
       subagentStarts: new Map(),
-      totals: freshTotals(),
       innerLlmCalls: 0,
       nextLlmStartMs: startMs,
     });
@@ -170,12 +160,11 @@ export class TurnRecorder {
     const turn = this.active.get(sessionKey);
     if (!turn) return;
 
-    turn.contextBuffer.push(message);
+    turn.contextBuffer.push(normalizeMessage(message));
     if (!isAssistant(message)) return;
 
     turn.innerLlmCalls += 1;
     const usage = shapeUsage(message.usage);
-    if (usage) accumulate(turn.totals, usage);
     const text = extractAssistantText(message);
     if (text) turn.lastAssistantText = text;
 
@@ -214,10 +203,14 @@ export class TurnRecorder {
     }
 
     const parent = turn.mostRecentLlm ?? turn.root;
+    // Tool runs follow LangChain's convention: arguments go in `inputs`
+    // directly (unwrapped), output under a single `output` key. LangSmith's
+    // tool-run viewer renders both without an extra "params" / "result"
+    // envelope this way.
     const toolRun = parent.createChild({
       name: event.toolName,
       run_type: "tool",
-      inputs: { params: event.params },
+      inputs: event.params,
       metadata: { ...turn.baseMetadata, tool_call_id: toolCallId },
       tags: ["openclaw:tool", `tool:${event.toolName}`],
     });
@@ -243,7 +236,7 @@ export class TurnRecorder {
     turn.tools.delete(toolCallId);
 
     const endMs = Date.now();
-    await toolRun.end({ result: event.result ?? null }, event.error, endMs);
+    await toolRun.end(wrapToolResult(event.result), event.error, endMs);
     await toolRun.patchRun();
 
     // Next inner LLM child starts wherever this tool finished, so the
@@ -276,13 +269,17 @@ export class TurnRecorder {
     const startMs = spawn ? Math.min(spawn.startedAt, endMs) : endMs;
     if (event.runId) turn.subagentStarts.delete(event.runId);
 
+    // All descriptive fields (kind, agent id, mode, label, outcome) live in
+    // metadata so LangSmith can filter on them. The subagent_ended hook
+    // doesn't expose the actual request payload the subagent received, so
+    // inputs stays empty rather than mirroring metadata under new names.
     const metadata: KVMap = {
       ...turn.baseMetadata,
       subagent_session_key: event.targetSessionKey,
       subagent_kind: event.targetKind,
     };
     if (event.runId) metadata.subagent_run_id = event.runId;
-    if (event.outcome) metadata.outcome = event.outcome;
+    if (event.outcome) metadata.subagent_outcome = event.outcome;
     if (spawn) {
       metadata.subagent_agent_id = spawn.agentId;
       metadata.subagent_mode = spawn.mode;
@@ -298,22 +295,23 @@ export class TurnRecorder {
       name: subagentRunName(event.targetSessionKey, spawn),
       run_type: "chain",
       start_time: startMs,
-      inputs: { target_kind: event.targetKind, reason: event.reason },
+      inputs: {},
       metadata,
       tags,
     });
 
     await subagentRun.postRun();
-    const outputs: KVMap = {};
-    if (event.outcome) outputs.outcome = event.outcome;
-    await subagentRun.end(outputs, event.error, endMs);
+    // Single readable `output` for the trace-list row preview. Structured
+    // outcome / reason are already on `metadata` above.
+    const output = event.outcome ? `${event.outcome}: ${event.reason}` : event.reason;
+    await subagentRun.end({ output }, event.error, endMs);
     await subagentRun.patchRun();
   }
 
   async onTurnEnd(
     sessionKey: string,
     success: boolean,
-    durationMs: number | undefined,
+    _durationMs: number | undefined,
     error: string | undefined,
   ): Promise<void> {
     const turn = this.active.get(sessionKey);
@@ -323,23 +321,20 @@ export class TurnRecorder {
     const endMs = Date.now();
     await this.closeOrphanTools(turn, ORPHAN_TOOL_ERROR, endMs);
 
-    const summary: KVMap = { success, llm_call_count: turn.innerLlmCalls };
-    // `output` is LangChain's AgentExecutor convention — LangSmith's trace
-    // list renders it as the row preview, so surfacing the final assistant
-    // text here makes the trace immediately scannable.
-    if (turn.lastAssistantText) summary.output = turn.lastAssistantText;
-    if (durationMs !== undefined) summary.duration_ms = durationMs;
-    if (turn.totals.hadUsage) {
-      const usage: KVMap = {
-        input_tokens: turn.totals.input,
-        output_tokens: turn.totals.output,
-        total_tokens: turn.totals.total,
-      };
-      if (turn.totals.hadCost) usage.total_cost = turn.totals.cost;
-      summary.usage = usage;
-    }
+    // Root outputs follow LangChain's AgentExecutor convention: the final
+    // assistant text under `output`, nothing else. Stats (llm_call_count)
+    // live in metadata; duration/usage come from LangSmith aggregating
+    // start_time/end_time and the LLM children's usage_metadata.
+    const outputs: KVMap = {};
+    if (turn.lastAssistantText) outputs.output = turn.lastAssistantText;
 
-    await turn.root.end(summary, error, endMs);
+    // Preserve a failure signal even when the host doesn't supply an error
+    // string — otherwise LangSmith renders `success: false` turns as green.
+    const finalError = error ?? (success ? undefined : "agent turn failed");
+
+    await turn.root.end(outputs, finalError, endMs, {
+      llm_call_count: turn.innerLlmCalls,
+    });
     await turn.root.patchRun();
   }
 
@@ -355,48 +350,43 @@ export class TurnRecorder {
   private async forceCloseTurn(turn: ActiveTurn, reason: string): Promise<void> {
     const endMs = Date.now();
     await this.closeOrphanTools(turn, reason, endMs);
-    await turn.root.end({ success: false }, reason, endMs);
+    await turn.root.end({}, reason, endMs);
     await turn.root.patchRun();
   }
 
   private async closeOrphanTools(turn: ActiveTurn, reason: string, endMs: number): Promise<void> {
     for (const toolRun of turn.tools.values()) {
-      await toolRun.end({ result: null }, reason, endMs);
+      await toolRun.end({}, reason, endMs);
       await toolRun.patchRun();
     }
     turn.tools.clear();
   }
 }
 
-function freshTotals(): UsageTotals {
-  return { input: 0, output: 0, total: 0, cost: 0, hadUsage: false, hadCost: false };
-}
-
-function accumulate(acc: UsageTotals, usage: ShapedUsage): void {
-  acc.input += usage.usageMetadata.input_tokens;
-  acc.output += usage.usageMetadata.output_tokens;
-  acc.total += usage.usageMetadata.total_tokens;
-  acc.hadUsage = true;
-  if (usage.totalCost !== undefined) {
-    acc.cost += usage.totalCost;
-    acc.hadCost = true;
-  }
-}
-
 function seedContext(event: PluginHookLlmInputEvent): unknown[] {
   const seeded: unknown[] = [];
   if (event.systemPrompt) seeded.push({ role: "system", content: event.systemPrompt });
-  seeded.push(...event.historyMessages);
+  // History messages arrive in OpenClaw's native shape (camelCase toolCall /
+  // toolResult blocks). Normalize so LangSmith's chat viewer renders them
+  // instead of showing "unknown" content blocks.
+  for (const msg of event.historyMessages) seeded.push(normalizeMessage(msg));
   if (event.prompt) seeded.push({ role: "user", content: event.prompt });
   return seeded;
 }
 
-function buildRootTags(ctx: PluginHookAgentContext, pm: ProviderModel): string[] {
-  const tags = ["openclaw:agent_turn", `provider:${pm.provider}`, `model:${pm.model}`];
+function buildRootTags(ctx: PluginHookAgentContext, _pm: ProviderModel): string[] {
+  // `provider:` / `model:` tags are deliberately absent — the same info is
+  // already in metadata (`ls_provider`, `ls_model_name`) where LangSmith's
+  // model filters read it from. Duplicating as tags adds search-list noise.
+  const tags = ["openclaw:agent_turn"];
   if (ctx.agentId) tags.push(`agent:${ctx.agentId}`);
   if (ctx.trigger) tags.push(`trigger:${ctx.trigger}`);
   if (ctx.messageProvider) tags.push(`source:${ctx.messageProvider}`);
-  if (ctx.channelId) tags.push(`channel:${ctx.channelId}`);
+  // Same rationale as `channel_id` in baseRunMetadata — skip when the
+  // "channel" is actually just the provider name echoed back.
+  if (ctx.channelId && ctx.channelId !== ctx.messageProvider) {
+    tags.push(`channel:${ctx.channelId}`);
+  }
   return tags;
 }
 
@@ -404,7 +394,11 @@ function buildLlmMetadata(turn: ActiveTurn, message: AssistantLike): KVMap {
   const meta: KVMap = {
     ...turn.baseMetadata,
     ls_model_type: "chat",
-    stop_reason: message.stopReason,
+    // Namespaced because OpenClaw normalizes stop reasons to its own string
+    // set (e.g. "stop") rather than the provider's native enum
+    // (Anthropic: "end_turn"/"tool_use"/…, OpenAI: "stop"/"tool_calls"/…).
+    // Using the namespaced key avoids implying canonical provider values.
+    openclaw_stop_reason: message.stopReason,
   };
   if (message.responseId) meta.response_id = message.responseId;
   return meta;
@@ -415,7 +409,12 @@ function buildLlmMetadata(turn: ActiveTurn, message: AssistantLike): KVMap {
  * `usage_metadata` is what LangSmith's UI and cost calculator key off of.
  */
 function buildLlmOutputs(message: InboundMessage, usage: ShapedUsage | undefined): KVMap {
-  const outputs: KVMap = { message };
+  const outputs: KVMap = { message: normalizeMessage(message) };
+  // A top-level `tool_calls` array is LangChain's canonical shape and gives
+  // LangSmith's viewer a strong hint even when individual content blocks
+  // aren't in a recognized form.
+  const toolCalls = extractToolCalls(message);
+  if (toolCalls) outputs.tool_calls = toolCalls;
   if (usage) outputs.usage_metadata = usage.usageMetadata;
   return outputs;
 }
@@ -453,6 +452,18 @@ function extractAssistantText(message: AssistantLike): string | undefined {
 
 function chatClassName(provider: string): string {
   return CHAT_CLASS_BY_PROVIDER[provider.toLowerCase()] ?? "ChatModel";
+}
+
+/**
+ * RunTree.end expects a `KVMap` for outputs, but tools can return any
+ * JSON-serialisable value (string, number, array, …). Wrap non-object
+ * results under an `output` key; let plain-object results pass through as
+ * the outputs dict directly so fields stay queryable.
+ */
+function wrapToolResult(result: unknown): KVMap {
+  if (result === undefined || result === null) return {};
+  if (typeof result === "object" && !Array.isArray(result)) return result as KVMap;
+  return { output: result };
 }
 
 /**

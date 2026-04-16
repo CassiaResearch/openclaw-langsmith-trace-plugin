@@ -169,12 +169,13 @@ describe("TurnRecorder", () => {
     const rootUpdate = calls.updates.find((u) => u.id === root.id);
     expect(rootUpdate).toBeDefined();
     const rootOutputs = rootUpdate!.update.outputs as any;
-    expect(rootOutputs.success).toBe(true);
-    expect(rootOutputs.llm_call_count).toBe(1);
-    expect(rootOutputs.usage.total_tokens).toBeGreaterThan(0);
-    // Final assistant text surfaces as `output` so the LangSmith trace-list
-    // row shows something readable instead of just the stats dict.
+    // Root outputs follow LangChain's AgentExecutor convention — just
+    // `output`, nothing else. Stats live in metadata; duration/usage come
+    // from LangSmith aggregating the run tree.
+    expect(Object.keys(rootOutputs)).toEqual(["output"]);
     expect(rootOutputs.output).toBe("Here is the summary.");
+    const rootMeta = (rootUpdate!.update.extra as any)?.metadata;
+    expect(rootMeta.llm_call_count).toBe(1);
   });
 
   it("compaction retry: second llm_input closes the first root with reason", async () => {
@@ -189,8 +190,10 @@ describe("TurnRecorder", () => {
 
     const firstUpdate = calls.updates.find((u) => u.id === roots[0]!.id);
     expect(firstUpdate).toBeDefined();
+    // Forced close records failure via `run.error`; outputs stays empty so
+    // LangSmith's status-from-error logic takes over.
     expect(firstUpdate!.update.error).toBe("Compacted and retried");
-    expect((firstUpdate!.update.outputs as any)?.success).toBe(false);
+    expect(firstUpdate!.update.outputs).toEqual({});
   });
 
   it("tool without a preceding assistant message attaches to the root", async () => {
@@ -290,13 +293,20 @@ describe("TurnRecorder", () => {
     expect(String(subagent.start_time)).toContain("2023-11-14T22:13:20.000");
     expect(subagentUpdate.update.end_time).toBe(endedAt);
 
-    // Spawn-time fields flow through to the RunTree metadata and tags.
+    // Descriptive fields all live in metadata (filterable) — inputs stays
+    // empty since the ended event doesn't carry the subagent's input payload.
     const meta = (subagent.extra as any)?.metadata;
     expect(meta.subagent_agent_id).toBe("child-agent");
     expect(meta.subagent_mode).toBe("run");
+    expect(meta.subagent_outcome).toBe("ok");
+    expect(subagent.inputs).toEqual({});
+
     const tags = (subagent as any).tags as string[];
     expect(tags).toContain("subagent_agent:child-agent");
     expect(tags).toContain("subagent_mode:run");
+
+    // Outputs is a readable preview for the trace-list row.
+    expect(subagentUpdate.update.outputs).toEqual({ output: "ok: handoff" });
   });
 
   it("agent_end force-closes orphan tool runs", async () => {

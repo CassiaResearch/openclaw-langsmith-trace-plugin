@@ -75,11 +75,15 @@ export function baseRunMetadata(ctx: PluginHookAgentContext, pm: ProviderModel):
     ls_model_name: pm.model,
   };
   if (ctx.sessionKey) meta.thread_id = ctx.sessionKey;
-  if (ctx.sessionId) meta.session_id = ctx.sessionId;
+  if (ctx.sessionId) meta.openclaw_session_id = ctx.sessionId;
   if (ctx.runId) meta.openclaw_run_id = ctx.runId;
   if (ctx.agentId) meta.agent_id = ctx.agentId;
   if (ctx.trigger) meta.trigger = ctx.trigger;
-  if (ctx.channelId) meta.channel_id = ctx.channelId;
+  // OpenClaw falls back to `messageProvider` for `channelId` in DMs, so the
+  // pair can match. Only emit `channel_id` when it's actually a distinct
+  // channel identifier — otherwise the value is just the provider name and
+  // misleads anyone filtering on it.
+  if (ctx.channelId && ctx.channelId !== ctx.messageProvider) meta.channel_id = ctx.channelId;
   if (ctx.messageProvider) meta.message_provider = ctx.messageProvider;
   return meta;
 }

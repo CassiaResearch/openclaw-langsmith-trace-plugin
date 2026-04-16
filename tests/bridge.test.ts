@@ -64,6 +64,14 @@ describe("baseRunMetadata", () => {
     expect(meta.ls_model_name).toBe("claude-opus");
   });
 
+  it("namespaces OpenClaw's sessionId to avoid shadowing thread_id in LangSmith's Threads view", () => {
+    const meta = baseRunMetadata(ctx, pm);
+    // LangSmith's thread list prefers metadata.session_id over thread_id, so
+    // we expose the OpenClaw UUID under a namespaced key instead.
+    expect(meta.session_id).toBeUndefined();
+    expect(meta.openclaw_session_id).toBe("s-id");
+  });
+
   it("skips empty context fields", () => {
     expect(baseRunMetadata({ sessionKey: "k" }, pm)).toEqual({
       thread_id: "k",
