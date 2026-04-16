@@ -1,0 +1,74 @@
+{
+  "id": "openclaw-langsmith-trace",
+  "name": "LangSmith Tracing",
+  "description": "LangSmith tracing for OpenClaw agent turns, inner LLM calls, tool calls, and subagents. Built on the official langsmith SDK.",
+  "version": "0.1.0",
+  "pluginApi": "1.0",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "langsmithApiKey": {
+        "type": "string",
+        "description": "LangSmith API key (or set LANGSMITH_API_KEY env var)"
+      },
+      "langsmithEndpoint": {
+        "type": "string",
+        "default": "https://api.smith.langchain.com",
+        "description": "LangSmith API endpoint"
+      },
+      "projectName": {
+        "type": "string",
+        "default": "openclaw",
+        "description": "LangSmith project name"
+      },
+      "traceAgentTurns": {
+        "type": "boolean",
+        "default": true,
+        "description": "Trace agent turn + inner LLM call tree"
+      },
+      "traceToolCalls": {
+        "type": "boolean",
+        "default": true,
+        "description": "Trace individual tool calls as children of the invoking LLM"
+      },
+      "tracingSamplingRate": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 1,
+        "default": 1,
+        "description": "Fraction of turns to trace (0.0 – 1.0). 1.0 traces everything; 0.1 traces 10%."
+      },
+      "failedTracesDir": {
+        "type": "string",
+        "description": "Directory where the SDK spools failed batches for later replay. Defaults to the langsmith SDK's own location when unset."
+      },
+      "debug": {
+        "type": "boolean",
+        "default": false,
+        "description": "Enable verbose [langsmith] log lines"
+      }
+    }
+  },
+  "uiHints": {
+    "langsmithApiKey": {
+      "label": "API Key",
+      "help": "LangSmith API key from smith.langchain.com/settings",
+      "sensitive": true
+    },
+    "projectName": {
+      "label": "Project",
+      "help": "LangSmith project name that receives traces"
+    },
+    "traceAgentTurns": { "label": "Trace agent turns" },
+    "traceToolCalls": { "label": "Trace tool calls" },
+    "tracingSamplingRate": {
+      "label": "Sampling rate",
+      "help": "0.0 – 1.0; 1.0 traces everything",
+      "advanced": true
+    },
+    "failedTracesDir": { "label": "Failed-trace spool dir", "advanced": true },
+    "langsmithEndpoint": { "label": "API endpoint", "advanced": true },
+    "debug": { "label": "Debug logging", "advanced": true }
+  }
+}

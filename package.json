@@ -1,0 +1,60 @@
+{
+  "name": "openclaw-langsmith-trace-plugin",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "LangSmith tracing plugin for OpenClaw, built on the official langsmith SDK. Per-call tracing with canonical usage_metadata, Threads-view grouping, sampling, and failed-trace disk replay.",
+  "license": "MIT",
+  "author": "Cassia Research",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/CassiaResearch/openclaw-langsmith-trace-plugin.git"
+  },
+  "bugs": {
+    "url": "https://github.com/CassiaResearch/openclaw-langsmith-trace-plugin/issues"
+  },
+  "homepage": "https://github.com/CassiaResearch/openclaw-langsmith-trace-plugin#readme",
+  "keywords": [
+    "openclaw",
+    "openclaw-plugin",
+    "langsmith",
+    "langchain",
+    "tracing",
+    "observability",
+    "llm",
+    "ai-agent",
+    "telemetry"
+  ],
+  "files": [
+    "src",
+    "openclaw.plugin.json",
+    "README.md",
+    "LICENSE"
+  ],
+  "openclaw": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "langsmith": "^0.5.20"
+  },
+  "peerDependencies": {
+    "openclaw": "^2026.4"
+  },
+  "devDependencies": {
+    "@types/node": "^25.6.0",
+    "prettier": "^3.4.2",
+    "typescript": "~6.0.2",
+    "vitest": "^4.1.4"
+  }
+}
