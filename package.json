@@ -46,7 +46,7 @@
     "node": ">=20"
   },
   "dependencies": {
-    "langsmith": "^0.5.20"
+    "langsmith": "^0.5.25"
   },
   "peerDependencies": {
     "openclaw": "^2026.4"
