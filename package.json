@@ -1,6 +1,6 @@
 {
   "name": "openclaw-langsmith-trace-plugin",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "type": "module",
   "description": "LangSmith tracing plugin for OpenClaw, built on the official langsmith SDK. Per-call tracing with canonical usage_metadata, Threads-view grouping, sampling, and failed-trace disk replay.",
   "license": "MIT",
