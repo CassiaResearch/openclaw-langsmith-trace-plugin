@@ -2,7 +2,7 @@
   "id": "openclaw-langsmith-trace",
   "name": "LangSmith Tracing",
   "description": "LangSmith tracing for OpenClaw agent turns, inner LLM calls, tool calls, and subagents. Built on the official langsmith SDK.",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "pluginApi": "1.0",
   "configContracts": {
     "secretInputs": {
